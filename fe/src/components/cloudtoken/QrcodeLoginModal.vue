@@ -19,7 +19,7 @@
             <n-icon size="20" color="#18a058">
               <CheckmarkCircleOutline />
             </n-icon>
-            <span>二维码已生成</span>
+            <span>二维码已生成，等待扫码中...</span>
           </div>
         </div>
 
@@ -39,7 +39,7 @@
           <li>打开天翼云盘APP</li>
           <li>点击右上角"扫一扫"</li>
           <li>扫描上方二维码</li>
-          <li>在APP中确认登录</li>
+          <li>在APP中确认登录，页面将自动跳转</li>
         </ol>
 
         <!-- 倒计时显示 -->
@@ -77,7 +77,7 @@
           @click="handleCheckLogin"
           :loading="checkLoading"
         >
-          我已扫码登录
+          手动确认登录
         </n-button>
       </n-space>
     </template>
@@ -106,6 +106,11 @@ interface Emits {
 const props = defineProps<Props>()
 const emit = defineEmits<Emits>()
 
+/** 轮询间隔（毫秒） */
+const POLLING_INTERVAL_MS = 2000
+/** 连续网络错误阈值，超过后停止轮询并提示 */
+const MAX_CONSECUTIVE_ERRORS = 3
+
 // 响应式数据
 const loading = ref(false)
 const checkLoading = ref(false)
@@ -117,6 +122,9 @@ const statusType = ref<'success' | 'info' | 'warning' | 'error'>('info')
 
 // 定时器
 let countdownTimer: number | null = null
+let pollingTimer: number | null = null
+let isPolling = false // 防止并发轮询请求
+let consecutiveErrors = 0 // 连续网络错误计数
 
 // 消息提示
 const message = useMessage()
@@ -149,14 +157,16 @@ const initQrcode = () => {
     .then((response) => {
       if (response.code === 200 && response.data) {
         qrcodeUuid.value = response.data.uuid
-        // 构建二维码URL，这里假设后端返回的是uuid，需要构建完整的登录URL
-        qrcodeUrl.value = `https://cloud.189.cn/api/portal/loginUrl.action?redirectURL=https://cloud.189.cn&uuid=${response.data.uuid}`
+        // 二维码内容直接使用 UUID（参考 cloudpan189-interface README：
+        // "生成二维码（二维码内容就是UUID）"），天翼云盘 APP 扫码后会识别该 UUID
+        // 并调用 qrcodeLoginResult.action 完成确认
+        qrcodeUrl.value = response.data.uuid
 
-        // 开始倒计时（120秒）
+        // 开始倒计时（120秒）和自动轮询
         startCountdown(120)
+        startPolling()
 
-        statusMessage.value =
-          '二维码生成成功，请使用天翼云盘APP扫码登录，扫码后点击"我已扫码登录"按钮'
+        statusMessage.value = '二维码生成成功，请使用天翼云盘APP扫描上方二维码并确认登录'
         statusType.value = 'success'
       } else {
         throw new Error(response.msg || '初始化二维码失败')
@@ -183,13 +193,95 @@ const startCountdown = (seconds: number) => {
     if (countdown.value <= 0) {
       clearInterval(countdownTimer!)
       countdownTimer = null
+      stopPolling()
       statusMessage.value = '二维码已过期，请重新生成'
       statusType.value = 'warning'
     }
   }, 1000) as unknown as number
 }
 
-// 手动检查登录状态
+// 开始自动轮询（每 POLLING_INTERVAL_MS 毫秒检查一次扫码状态）
+const startPolling = () => {
+  stopPolling()
+  pollingTimer = setInterval(() => {
+    if (countdown.value <= 0 || !qrcodeUuid.value) {
+      stopPolling()
+      return
+    }
+    autoCheckLogin()
+  }, POLLING_INTERVAL_MS) as unknown as number
+}
+
+// 停止自动轮询
+const stopPolling = () => {
+  if (pollingTimer) {
+    clearInterval(pollingTimer)
+    pollingTimer = null
+  }
+  isPolling = false
+  consecutiveErrors = 0
+}
+
+// 自动轮询检查登录状态（静默，不打扰用户）
+const autoCheckLogin = () => {
+  if (isPolling || !qrcodeUuid.value) return
+  isPolling = true
+
+  const checkData = {
+    uuid: qrcodeUuid.value,
+    ...(props.updateMode && props.tokenId ? { id: props.tokenId } : {}),
+  }
+
+  checkQrcode(checkData)
+    .then((response) => {
+      consecutiveErrors = 0 // 请求成功，重置网络错误计数
+      if (response.code === 200) {
+        // 扫码登录成功
+        handleLoginSuccess()
+      } else if (response.code === 40003) {
+        // 等待用户扫码确认，继续轮询（不做任何操作）
+      } else if (response.code === 40001) {
+        // 二维码已过期
+        stopPolling()
+        clearTimers()
+        countdown.value = 0
+        statusMessage.value = '二维码已过期，请重新生成'
+        statusType.value = 'warning'
+      } else {
+        // 其他错误，停止轮询
+        stopPolling()
+        statusMessage.value = response.msg || '检查登录状态失败，请手动点击确认'
+        statusType.value = 'error'
+      }
+    })
+    .catch(() => {
+      // 网络异常，计数并在连续失败过多时停止轮询并告知用户
+      consecutiveErrors++
+      if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+        stopPolling()
+        statusMessage.value = '网络连接异常，请检查网络后重试'
+        statusType.value = 'error'
+      }
+    })
+    .finally(() => {
+      isPolling = false
+    })
+}
+
+// 登录成功的统一处理
+const handleLoginSuccess = () => {
+  clearTimers()
+  statusMessage.value = '登录成功！'
+  statusType.value = 'success'
+  message.success('扫码登录成功')
+
+  setTimeout(() => {
+    showModal.value = false
+    emit('success')
+  }, 1500)
+}
+
+// 手动检查登录状态（作为自动轮询的备用方式）
 const handleCheckLogin = () => {
   if (!qrcodeUuid.value) {
     message.error('二维码ID不存在，请重新生成二维码')
@@ -207,16 +299,7 @@ const handleCheckLogin = () => {
     .then((response) => {
       if (response.code === 200) {
         // 登录成功
-        clearTimers()
-        statusMessage.value = '登录成功！'
-        statusType.value = 'success'
-        message.success('扫码登录成功')
-
-        // 延迟关闭弹窗并触发成功回调
-        setTimeout(() => {
-          showModal.value = false
-          emit('success')
-        }, 1500)
+        handleLoginSuccess()
       } else if (response.code === 40001) {
         // 二维码已过期
         clearTimers()
@@ -226,6 +309,7 @@ const handleCheckLogin = () => {
         message.warning('二维码已过期')
       } else if (response.code === 40002) {
         // 用户取消登录
+        stopPolling()
         statusMessage.value = '用户取消了登录'
         statusType.value = 'info'
         message.info('用户取消了登录')
@@ -248,12 +332,13 @@ const handleCheckLogin = () => {
     })
 }
 
-// 清理定时器
+// 清理所有定时器
 const clearTimers = () => {
   if (countdownTimer) {
     clearInterval(countdownTimer)
     countdownTimer = null
   }
+  stopPolling()
 }
 
 // 重置状态
@@ -263,6 +348,7 @@ const resetState = () => {
   countdown.value = 0
   statusMessage.value = ''
   loading.value = false
+  checkLoading.value = false
 }
 
 // 取消操作

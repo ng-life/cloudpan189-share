@@ -33,6 +33,17 @@ var (
 	codeNotMatchLoginType   = bi.Next("不匹配的登录类型")
 )
 
+// 二维码登录状态专用业务码（前端轮询时使用）
+var qrBi = httpcontext.NewBusinessGenerator(consts.BusCodeQrcodeExpired)
+
+var (
+	// TODO: codeQrcodeExpired（40001） 将在识别天翼云盘 API 返回的二维码过期错误码后启用
+	// TODO: 40002 用户取消登录，待 cloudpan189-interface 返回明确的 RespErr 错误码后启用
+	_                 = qrBi.Next("二维码已过期")   // 40001（占位，保留码位）
+	_                 = qrBi.Next("用户取消登录")   // 40002（占位，保留码位）
+	codeQrcodeWaiting = qrBi.Next("等待用户扫码确认") // 40003
+)
+
 type handler struct {
 	cloudTokenService cloudtokenSvi.Service
 	mountPointService mountPointSvi.Service

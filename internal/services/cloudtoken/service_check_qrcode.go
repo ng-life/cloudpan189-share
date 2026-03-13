@@ -1,12 +1,20 @@
 package cloudtoken
 
 import (
+	stderrors "errors"
+
 	"github.com/pkg/errors"
 	"github.com/xxcheng123/cloudpan189-interface/client"
 	"github.com/xxcheng123/cloudpan189-share/internal/framework/context"
 	"github.com/xxcheng123/cloudpan189-share/internal/repository/models"
 	"go.uber.org/zap"
 )
+
+// ErrQrcodeWaiting 等待用户在 APP 中确认扫码登录
+var ErrQrcodeWaiting = stderrors.New("等待用户扫码确认")
+
+// e189AccessTokenEmptyMsg 是 cloudpan189-interface/client.LoginQuery 在用户尚未扫码时返回的错误消息
+const e189AccessTokenEmptyMsg = "E189AccessToken is empty"
 
 // CheckQrcodeRequest 检查二维码请求
 type CheckQrcodeRequest struct {
@@ -18,6 +26,12 @@ type CheckQrcodeRequest struct {
 func (s *service) CheckQrcode(ctx context.Context, req *CheckQrcodeRequest) (err error) {
 	respData, err := client.LoginQuery(req.UUID)
 	if err != nil {
+		// LoginQuery 在用户尚未扫码/确认时会返回 "E189AccessToken is empty"（标准 errors.New，非 RespErr），
+		// 此时应告知前端继续等待，而非视为登录失败
+		if err.Error() == e189AccessTokenEmptyMsg {
+			return ErrQrcodeWaiting
+		}
+
 		ctx.Error("登录查询失败", zap.Error(err))
 
 		return errors.Wrap(err, "登录查询失败")

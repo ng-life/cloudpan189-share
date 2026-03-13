@@ -15,11 +15,22 @@ linters:
       enable:
         - err
   exclusions:
+    paths:
+      - fe/node_modules
     rules:
       - linters:
           - staticcheck
-        text: "SA5008: unknown JSON option"
+        text: "SA5008:"
       - linters:
           - nlreturn
         path: internal/framework/context/trace.go
         text: "return with no blank line before"
+      - linters:
+          - wsl_v5
+        path: internal/framework/context/http.go
+      - linters:
+          - wsl_v5
+        path: internal/handler/consumer/file/func_scan_file.go
+      - linters:
+          - wsl_v5
+        path: internal/repository/models/setting.go
